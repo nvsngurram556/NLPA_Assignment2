@@ -30,6 +30,8 @@ import time
 
 def clean_text(raw_text):
     # Split text into lines
+    if isinstance(raw_text, list):
+        raw_text = "\n".join(raw_text)
     lines = raw_text.splitlines()
 
     # Count line frequency to identify repeated headers/footers
@@ -55,7 +57,7 @@ def clean_text(raw_text):
         if line_stripped in seen_lines:
             continue
         seen_lines.add(line_stripped)
-        cleaned_lines.append(line_stripped)
+        cleaned_lines.extend(line_stripped.split('. '))  # Split long lines into sentences
 
     # Join lines and normalize spaces
     text = " ".join(cleaned_lines)
@@ -84,21 +86,13 @@ def segment_sections(text):
         segmented[key] = segmented[key].strip()
     return segmented
 
-def split_into_chunks(text, chunk_size):
-    words = text.split()
+def split_into_chunks(data, chunk_size):
     chunks = []
-    for i in range(0, len(words), chunk_size):
-        chunk_words = words[i:i+chunk_size]
-        chunk_text = " ".join(chunk_words)
-        chunk = {
-            "id": f"chunk_{i//chunk_size}",
-            "text": chunk_text,
-            "metadata": {
-                "chunk_index": i // chunk_size,
-                "chunk_size": len(chunk_words)
-            }
-        }
-        chunks.append(chunk)
+    for text in data:  # text is already a string
+        words = text.split()
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            chunks.append(chunk)
     return chunks
 
 def simple_sent_tokenize(text):
@@ -108,6 +102,8 @@ def simple_sent_tokenize(text):
     return [s.strip() for s in sentences if s.strip()]
 
 def create_faiss_vector_store(chunks, index_path):
+    if not chunks:
+        raise ValueError("No text chunks provided to FAISS indexer.")
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vector_store = FAISS.from_texts(chunks, embeddings)
     vector_store.save_local(index_path)
@@ -117,20 +113,30 @@ def create_bm25_retriever(chunks):
     bm25_retriever = BM25Retriever.from_texts(chunks)
     return bm25_retriever
 
-def process_text(text):
-    preprocessed_data = clean_text(text)
-    segmented_data = segment_sections(preprocessed_data)
-    # Handle case where segmented_data is a dictionary by joining all values into a single string
-    if isinstance(segmented_data, dict):
-        segmented_text = "\n\n".join(segmented_data.values())
+def process_text(data):
+    # If already a list of chunks, skip preprocessing
+    if isinstance(data, list):
+        chunks = data
     else:
-        segmented_text = segmented_data
-    text_splitter = CharacterTextSplitter(chunk_size=400, chunk_overlap=20)
-    chunks = text_splitter.split_text(segmented_text)
+        preprocessed_data = clean_text(data)
+        segmented_data = segment_sections(preprocessed_data)
+        # Handle case where segmented_data is a dictionary
+        if isinstance(segmented_data, dict):
+            segmented_text = "\n\n".join(segmented_data.values())
+        else:
+            segmented_text = segmented_data
+
+        text_splitter = CharacterTextSplitter(chunk_size=400, chunk_overlap=20)
+        chunks = text_splitter.split_text(segmented_text)
+
+    if not chunks:
+        raise ValueError("No text chunks generated during processing.")
+
     index_path = "data/processed/faiss_index"
     faiss_store = create_faiss_vector_store(chunks, index_path)
     bm25_retriever = create_bm25_retriever(chunks)
     return faiss_store, bm25_retriever
+
 
 def preprocess_query(query):
     query = query.lower()
@@ -247,8 +253,8 @@ if __name__ == "__main__":
     for section, content in segmented_data.items():
         print(f"Section: {section}, Length: {len(content)}")
     
-    chunks_100 = split_into_chunks(prepreocessed_data, 100)
-    chunks_400 = split_into_chunks(prepreocessed_data, 400)
+    chunks_100 = split_into_chunks(segmented_data, 100)
+    chunks_400 = split_into_chunks(segmented_data, 400)
     print(f"Number of 100-word chunks: {len(chunks_100)}")
     if chunks_100:
         print("First 100-word chunk example:", chunks_100[0])
@@ -257,7 +263,7 @@ if __name__ == "__main__":
     if chunks_400:
         print("First 400-word chunk example:", chunks_400[0])
 
-    faiss_store, bm25_retriever = process_text(data_preprocess_code)
+    faiss_store, bm25_retriever = process_text(chunks_400)
 
     #sample_query = "What was EPS in FY2024-25 vs. FY2023-24?"
     #results = hybrid_retrieve(sample_query, faiss_store, bm25_retriever, top_n=5)
